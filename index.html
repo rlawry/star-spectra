@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Star Spectra Viewer — Debuggable</title>
+<style>
+  :root { --bg:#000; --panel:#111; --muted:#9aa; --err:#f88; --accent:#7fd; }
+  html,body { height:100%; margin:0; background:var(--bg); color:#fff; font-family:system-ui,Segoe UI,Roboto,sans-serif; }
+  header { padding:.6rem; text-align:center; background:var(--panel); border-bottom:1px solid #222; }
+  #controls { display:flex; gap:.6rem; align-items:center; justify-content:center; padding:.6rem; background:#0e0e0e; border-bottom:1px solid #222; flex-wrap:wrap; }
+  select { background:#111; color:#fff; border:1px solid #333; padding:.4rem .6rem; border-radius:6px; font-size:1rem; min-width:200px; }
+  button { padding:.35rem .6rem; border-radius:6px; border:none; background:var(--accent); color:#000; cursor:pointer; }
+  #message { color:var(--muted); font-size:.9rem; text-align:center; margin-top:.25rem; }
+  #canvas-container { display:flex; flex-direction:column; align-items: center; justify-content:center; height:calc(100vh - 136px); padding:.6rem; }
+  canvas { width:100%; height:100%; max-width:1100px; max-height:700px; border:1px solid #222; background:#000; display:block; }
+  footer { padding:.4rem; text-align:center; color:#888; font-size:.8rem; }
+  @media (max-width:520px){ #controls { padding:.5rem; gap:.4rem; } select{min-width:unset;width:100%;} }
+</style>
+</head>
+<body>
+  <header><h2 style="margin:.1rem">🌌 Star Spectra Viewer</h2></header>
+
+  <div id="controls" aria-live="polite">
+    <label for="sptype" style="margin-right:.4rem">Spectral Type:</label>
+    <select id="sptype" aria-label="Spectral type"></select>
+    <button id="reloadBtn" title="Reload spectra JSON">Reload</button>
+    <div id="message" role="status">Initializing…</div>
+  </div>
+
+  <div id="canvas-container">
+    <canvas id="spectrumCanvas"></canvas>
+    <canvas id="canvasRainbow" style="height:20px; margin-top:4px;"></canvas>
+  </div>
+
+  <footer>
+    Spectral types based on Kesseli et al. (2017), arXiv:1702.06957 and the BOSS Empirical Templates therein
+  </footer>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => init());
+
+const canvas = document.getElementById('spectrumCanvas');
+const ctx = canvas.getContext('2d');
+const select = document.getElementById('sptype');
+const reloadBtn = document.getElementById('reloadBtn');
+const messageEl = document.getElementById('message');
+
+let spectraData = {};   // will be object keyed by sptype
+let currentKey = null;
+
+async function init(){
+  makeCanvasSizing();
+  await loadSpectraWithFallbacks();
+  reloadBtn.addEventListener('click', () => loadSpectraWithFallbacks(true));
+  select.addEventListener('change', () => {
+    if (select.value) loadSpectrum(select.value);
+  });
+  //testRainbow(document.getElementById('canvasRainbow'));
+}
+
+function makeCanvasSizing(){
+  function resize() {
+    canvas.width  = Math.floor(canvas.clientWidth * devicePixelRatio);
+    canvas.height = Math.floor(canvas.clientHeight * devicePixelRatio);
+    ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    if (currentKey){
+        drawSpectrum(spectraData[currentKey]);
+        drawSpectrumRainbow(spectraData[currentKey], document.getElementById('canvasRainbow'));
+    }
+  }
+  window.addEventListener('resize', debounce(resize, 120));
+  resize();
+}
+
+function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+
+async function tryFetchJSON(path){
+  try {
+    const res = await fetch(path, {cache: "no-cache"});
+    console.log('fetch', path, '=>', res.status);
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    const json = await res.json();
+    return {path, json};
+  } catch (err) {
+    console.warn('fetch failed', path, err);
+    return {path, error: err};
+  }
+}
+
+async function loadSpectraWithFallbacks(force=false){
+  showMessage('Loading spectra…');
+
+  // Try common filenames (you can expand this list if yours differs)
+  const candidates = ['spectra_all.json','spectra.json','spectra_all.min.json'];
+  let result = null;
+  for (const p of candidates) {
+    result = await tryFetchJSON(p);
+    if (result && result.json) { console.log('Loaded', p); break; }
+  }
+
+  if (!result || result.error) {
+    showMessage('Could not load any spectra JSON. Check path and server (see console).', true);
+    return;
+  }
+
+  // Normalize structure
+  let raw = result.json;
+  let keys = [];
+
+  if (Array.isArray(raw)) {
+    // array -> convert to object with indices as keys
+    for (let i=0;i<raw.length;i++){
+      keys.push(String(i));
+    }
+    const obj = {};
+    for (let i=0;i<raw.length;i++) obj[keys[i]] = raw[i];
+    raw = obj;
+  } else if (typeof raw === 'object' && raw !== null) {
+    keys = Object.keys(raw);
+  } else {
+    showMessage('JSON shape not recognized (expect object or array).', true);
+    console.log('raw json sample:', raw);
+    return;
+  }
+
+  if (keys.length === 0) {
+    showMessage('JSON loaded but contains no spectra (empty object).', true);
+    console.log('Empty JSON:', result);
+    return;
+  }
+
+  // Coerce each entry to expected { wavelength: [], flux: [] } if necessary
+  const normalized = {};
+  for (const k of keys) {
+    const entry = raw[k];
+    // If already has wavelength+flux fields, use them
+    if (entry && entry.wavelength && entry.flux) {
+      normalized[k] = { wavelength: entry.wavelength, flux: entry.flux };
+      continue;
+    }
+    // If entry has 'LogLam' and 'Flux', convert LogLam -> nm
+    if (entry && entry.LogLam && entry.Flux) {
+      const wl = Array.from(entry.LogLam).map(l => Math.pow(10, l) / 10.0);
+      const fx = Array.from(entry.Flux);
+      normalized[k] = { wavelength: wl, flux: fx };
+      continue;
+    }
+    // If entry looks like [ [wl],[flux] ] or [wl,flux] pairs, try to handle
+    if (Array.isArray(entry) && entry.length > 0) {
+      // many formats possible; try to guess:
+      if (Array.isArray(entry[0]) && entry.length === 2) {
+        const [a,b] = entry;
+        if (a.length === b.length) { normalized[k] = { wavelength: a, flux: b }; continue; }
+      }
+      if (Array.isArray(entry[0]) && entry[0].wavelength) {
+        // array of objects, choose first
+        normalized[k] = { wavelength: entry[0].wavelength, flux: entry[0].flux }; continue;
+      }
+    }
+    // fallback: store raw and let draw fail with informative message
+    normalized[k] = { __raw: entry };
+  }
+
+  spectraData = normalized;
+const spectralOrder = ['L','T','M','K','G','F','A','B','O'];
+
+function spectralComparator(a, b) {
+  // Match first letter and optional digits immediately after
+  const matchA = a.match(/^([LTMKGFABO])(\d+)?/);
+  const matchB = b.match(/^([LTMKGFABO])(\d+)?/);
+
+  if (!matchA && !matchB) return 0;
+  if (!matchA) return 1;
+  if (!matchB) return -1;
+
+  const [ , letterA, numA ] = matchA;
+  const [ , letterB, numB ] = matchB;
+
+  const idxA = spectralOrder.indexOf(letterA);
+  const idxB = spectralOrder.indexOf(letterB);
+  if (idxA !== idxB) return idxA - idxB;
+
+  // subtype descending (9 → 0)
+  const nA = numA ? parseInt(numA, 10) : 0;
+  const nB = numB ? parseInt(numB, 10) : 0;
+  return nB - nA;
+}
+
+// usage:
+const finalKeys = Object.keys(spectraData).sort(spectralComparator);
+populateSelect(finalKeys);
+
+  showMessage(`Loaded ${finalKeys.length} spectra from ${result.path}`);
+  console.log('spectra keys (first 20):', finalKeys.slice(0,20));
+  // auto-select first real entry
+  select.selectedIndex = 1; // index 0 is placeholder
+  if (select.value) loadSpectrum(select.value);
+}
+
+function populateSelect(keys){
+  select.innerHTML = '';
+  const ph = document.createElement('option');
+  ph.value = '';
+  ph.textContent = '-- choose spectrum --';
+  ph.disabled = true;
+  ph.selected = true;
+  select.appendChild(ph);
+
+  keys.forEach(k => {
+    const opt = document.createElement('option');
+    opt.value = String(k);
+    opt.textContent = String(k);
+    select.appendChild(opt);
+  });
+}
+
+function loadSpectrum(key){
+  if (!spectraData[key]) { showMessage('No spectrum for key: ' + key, true); return; }
+  const s = spectraData[key];
+  if (s.__raw) {
+    showMessage('Spectrum format not recognized for "'+key+'". See console for raw object.', true);
+    console.log('raw spectrum for', key, s.__raw);
+    return;
+  }
+  currentKey = key;
+  drawSpectrum(s);
+  drawSpectrumRainbow(s, document.getElementById('canvasRainbow'));
+}
+
+function showMessage(txt, isErr=false){
+  messageEl.textContent = txt;
+  messageEl.style.color = isErr ? 'var(--err)' : 'var(--muted)';
+}
+
+function drawSpectrum(spectrum) {
+  // expects {wavelength:[], flux:[]}
+  if (!spectrum || !spectrum.wavelength || !spectrum.flux) {
+    showMessage('Cannot draw: spectrum missing fields.', true);
+    console.log('spectrum passed to drawSpectrum:', spectrum);
+    return;
+  }
+  const wl = spectrum.wavelength;
+  const fx = spectrum.flux;
+  if (wl.length !== fx.length) {
+    showMessage('Wavelength and flux arrays differ in length.', true);
+    console.log('wl.length', wl.length, 'fx.length', fx.length);
+    return;
+  }
+
+  // size-aware drawing
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  canvas.width  = Math.floor(cw * devicePixelRatio);
+  canvas.height = Math.floor(ch * devicePixelRatio);
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  ctx.clearRect(0,0,cw,ch);
+
+  const minW = Math.min(...wl);
+  const maxW = Math.max(...wl);
+  const maxF = Math.max(...fx) || 1;
+
+  ctx.lineWidth = Math.max(1, Math.min(1, cw/400));
+
+  // reserve space at bottom for wavelength scale
+  const marginBottom = 24;
+  const plotHeight = ch - marginBottom;
+
+  // draw many small colored segments
+  for (let i=0;i<wl.length-1;i++){
+    const x1 = ((wl[i] - minW) / (maxW - minW)) * cw;
+    const y1 = plotHeight - (fx[i] / maxF) * plotHeight;
+    const x2 = ((wl[i+1] - minW) / (maxW - minW)) * cw;
+    const y2 = plotHeight - (fx[i+1] / maxF) * plotHeight;
+
+    ctx.strokeStyle = wavelengthToRGB(wl[i]);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  // small label
+  ctx.fillStyle = '#ddd';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText(`Spectral: ${currentKey}  —  λ range ${minW.toFixed(0)}–${maxW.toFixed(0)} nm`, 8, 16);
+
+  // draw wavelength scale along bottom
+  drawWavelengthScale(wl, ctx, cw, ch);
+}
+
+
+function drawWavelengthScale(wl, ctx, cw, ch) {
+    const minW = Math.min(...wl);
+    const maxW = Math.max(...wl);
+
+    const marginBottom = 24;       // space for labels
+    const axisBottom = ch - marginBottom;
+
+    const range = maxW - minW;
+
+    // Determine major and minor steps
+    let majorStep = Math.pow(10, Math.floor(Math.log10(range / 10)));
+    if (majorStep < 10) majorStep = 10;
+    if (majorStep > 20) majorStep = 20;
+
+    const minorStep = majorStep / 4;
+
+    ctx.strokeStyle = '#aaa';
+    ctx.fillStyle = '#ddd';
+    ctx.lineWidth = 1;
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+
+    // Calculate spacing to avoid overlapping labels
+    const pixelsPerMajor = (majorStep / range) * cw;
+    const minPixelSpacing = 50;  // minimum spacing between labels
+    const labelSkip = Math.max(1, Math.ceil(minPixelSpacing / pixelsPerMajor));
+
+    // Draw major ticks and labels
+    let majorIndex = 0;
+    let startMajor = Math.ceil(minW / majorStep) * majorStep;
+    for (let w = startMajor; w <= maxW; w += majorStep) {
+        const x = ((w - minW) / range) * cw;
+        ctx.beginPath();
+        ctx.moveTo(x, axisBottom);
+        ctx.lineTo(x, axisBottom - 10);
+        ctx.stroke();
+
+        // Only draw label every labelSkip ticks
+        if (majorIndex % labelSkip === 0) {
+            ctx.fillText(`${Math.round(w)}`, x, axisBottom + 2);
+        }
+        majorIndex++;
+    }
+
+    // Draw minor ticks
+    let startMinor = Math.ceil(minW / minorStep) * minorStep;
+    for (let w = startMinor; w <= maxW; w += minorStep) {
+        if (Math.abs(w % majorStep) < 1e-6) continue; // skip if major tick
+        const x = ((w - minW) / range) * cw;
+        ctx.beginPath();
+        ctx.moveTo(x, axisBottom);
+        ctx.lineTo(x, axisBottom - 5);
+        ctx.stroke();
+    }
+}
+
+function drawSpectrumRainbow(spectrum, canvasRainbow) {
+    if (!spectrum || !spectrum.wavelength || !spectrum.flux) return;
+
+    const wl = spectrum.wavelength;
+    const fx = spectrum.flux;
+    if (wl.length !== fx.length) {
+        console.warn('Rainbow: wavelength and flux lengths differ', wl.length, fx.length);
+        return;
+    }
+
+    const cw = canvasRainbow.clientWidth;
+    const ch = canvasRainbow.clientHeight;
+
+    // set canvas size in device pixels
+    canvasRainbow.width = Math.floor(cw * devicePixelRatio);
+    canvasRainbow.height = Math.floor(ch * devicePixelRatio);
+
+    const ctxR = canvasRainbow.getContext('2d');
+    ctxR.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    ctxR.clearRect(0,0,cw,ch);
+
+    const minW = Math.min(...wl);
+    const maxW = Math.max(...wl);
+    const maxF = Math.max(...fx); // max across all wavelengths
+
+    if (maxF === 0) return; // prevent divide by zero
+
+    for (let i = 0; i < cw; i++) {
+        // map pixel to wavelength
+        const w = minW + (i / cw) * (maxW - minW);
+
+        // find nearest flux index
+        let idx = wl.findIndex(v => v >= w);
+        if (idx < 0) idx = wl.length - 1;
+
+        // normalize flux to max flux
+        const f = fx[idx] / maxF;
+
+        // convert wavelength to RGB
+        const rgb = wavelengthToRGBObj(w);
+        const r = Math.floor(rgb.r * f);
+        const g = Math.floor(rgb.g * f);
+        const b = Math.floor(rgb.b * f);
+        ctxR.fillStyle = `rgb(${r},${g},${b})`;
+        ctxR.fillRect(i, 0, 1, ch);
+    }
+}
+
+function testRainbow(canvasRainbow) {
+    const cw = canvasRainbow.clientWidth;
+    const ch = canvasRainbow.clientHeight;
+
+    canvasRainbow.width = Math.floor(cw * devicePixelRatio);
+    canvasRainbow.height = Math.floor(ch * devicePixelRatio);
+
+    const ctxR = canvasRainbow.getContext('2d');
+    ctxR.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+
+    for (let i = 0; i < cw; i++) {
+        const t = i / cw;               // 0 → 1
+        const r = Math.floor(255 * t);
+        const g = Math.floor(255 * (1 - t));
+        const b = 128;
+        ctxR.fillStyle = `rgb(${r},${g},${b})`;
+        ctxR.fillRect(i,0,1,ch);
+    }
+}
+
+// approximate wavelength -> rgb (380–780 nm)
+function wavelengthToRGB(wavelength) {
+  let r=0,g=0,b=0, factor=0;
+  if (wavelength >= 380 && wavelength < 440) { r = -(wavelength - 440) / (440 - 380); g=0; b=1; }
+  else if (wavelength >= 440 && wavelength < 490) { r=0; g=(wavelength-440)/(490-440); b=1; }
+  else if (wavelength >= 490 && wavelength < 510) { r=0; g=1; b=-(wavelength-510)/(510-490); }
+  else if (wavelength >= 510 && wavelength < 580) { r=(wavelength-510)/(580-510); g=1; b=0; }
+  else if (wavelength >= 580 && wavelength < 645) { r=1; g=-(wavelength-645)/(645-580); b=0; }
+  else if (wavelength >= 645 && wavelength <= 780) { r=1; g=0; b=0; }
+  else { r=g=b=0; }
+
+  if (wavelength >= 380 && wavelength < 420) factor = 0.3 + 0.7*(wavelength-380)/40;
+  else if (wavelength >= 420 && wavelength <= 700) factor = 1.0;
+  else if (wavelength > 700 && wavelength <= 780) factor = 0.3 + 0.7*(780-wavelength)/80;
+  else factor = 0.0;
+
+  const gamma = 0.8;
+  const R = Math.round(Math.pow(r*factor, gamma) * 255 + 12);
+  const G = Math.round(Math.pow(g*factor, gamma) * 255 + 12);
+  const B = Math.round(Math.pow(b*factor, gamma) * 255 + 12);
+  return `rgb(${R},${G},${B})`;
+}
+
+function wavelengthToRGBObj(wavelength) {
+    // same logic as your original function
+    let r=0,g=0,b=0, factor=0;
+    if (wavelength >= 380 && wavelength < 440) { r = -(wavelength - 440) / 60; g=0; b=1; }
+    else if (wavelength >= 440 && wavelength < 490) { r=0; g=(wavelength-440)/(490-440); b=1; }
+    else if (wavelength >= 490 && wavelength < 510) { r=0; g=1; b=-(wavelength-510)/(510-490); }
+    else if (wavelength >= 510 && wavelength < 580) { r=(wavelength-510)/(580-510); g=1; b=0; }
+    else if (wavelength >= 580 && wavelength < 645) { r=1; g=-(wavelength-645)/(645-580); b=0; }
+    else if (wavelength >= 645 && wavelength <= 780) { r=1; g=0; b=0; }
+    else { r=g=b=0; }
+
+    if (wavelength >= 380 && wavelength < 420) factor = 0.3 + 0.7*(wavelength-380)/40;
+    else if (wavelength >= 420 && wavelength <= 700) factor = 1.0;
+    else if (wavelength > 700 && wavelength <= 780) factor = 0.3 + 0.7*(780-wavelength)/80;
+    else factor = 0.0;
+
+    const gamma = 0.8;
+    return { 
+        r: Math.pow(r*factor, gamma) * 255, 
+        g: Math.pow(g*factor, gamma) * 255, 
+        b: Math.pow(b*factor, gamma) * 255 
+    };
+}
+
+</script>
+</body>
+</html>
