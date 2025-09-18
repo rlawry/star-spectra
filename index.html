@@ -124,7 +124,7 @@
       ctx.textBaseline = 'top';
       const minRounded = Math.round(minW);
       const maxRounded = Math.round(maxW);
-      ctx.fillText(`Spectral: ${currentKey} — ${minRounded}–${maxRounded}`, 8, 8);
+      ctx.fillText(`Spectral Type: ${currentKey} — ${minRounded}–${maxRounded}nm`, 8, 8);
 
       // draw bottom wavelength axis/scale inside reserved margin
       drawWavelengthScale(minW, maxW, ctx, cw, ch, marginBottom);
