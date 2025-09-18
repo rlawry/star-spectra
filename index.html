@@ -24,7 +24,7 @@
   <!-- ⭐ Canvas area -->
   <div id="canvas-container">
     <canvas id="spectrumCanvas"></canvas>
-    <canvas id="canvasRainbow" style="height:20px; margin-top:4px;"></canvas>
+    <canvas id="canvasRainbow" style="height:40px; margin-top:4px;"></canvas>
   </div>
 
   <footer>
@@ -97,11 +97,11 @@
       const maxF = Math.max(...fx) || 1.0;
 
       // layout: reserve bottom space for scale labels so text is readable
-      const marginBottom = 36;    // px for scale and labels
-      const topPadding = 8;
+      const marginBottom = 60;    // px for scale and labels
+      const topPadding = 40;
       const plotHeight = Math.max(0, ch - marginBottom - topPadding);
 
-      ctx.lineWidth = Math.max(1, Math.round(cw / 600)); // sensible for many sizes
+      ctx.lineWidth = 1; // sensible for many sizes
       ctx.lineCap = 'round';
 
       // draw spectrum as many small colored segments
@@ -285,7 +285,7 @@
     async function loadSpectraWithFallbacks() {
       showMessage('Loading spectra…');
 
-      const candidates = ['spectra_all.json', 'spectra.json', 'spectra_all.min.json'];
+      const candidates = ['spectra.json'];
       let result = null;
       for (const p of candidates) {
         result = await tryFetchJSON(p);
