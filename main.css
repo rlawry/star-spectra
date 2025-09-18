@@ -1,0 +1,162 @@
+:root {
+  --bg: #000;
+  --panel: #111;
+  --muted: #9aa;
+  --err: #f88;
+  --accent: #7fd;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: #fff;
+  font-family: system-ui, Segoe UI, Roboto, sans-serif;
+}
+
+header {
+  padding: .6rem;
+  text-align: center;
+  background: var(--panel);
+  border-bottom: 1px solid #222;
+}
+
+#controls {
+  display: flex;
+  gap: .6rem;
+  align-items: center;
+  justify-content: center;
+  padding: .6rem;
+  background: #0e0e0e;
+  border-bottom: 1px solid #222;
+  flex-wrap: wrap;
+}
+
+select {
+  background: #111;
+  color: #fff;
+  border: 1px solid #333;
+  padding: .4rem .6rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  min-width: 200px;
+}
+
+button {
+  padding: .35rem .6rem;
+  border-radius: 6px;
+  border: none;
+  background: var(--accent);
+  color: #000;
+  cursor: pointer;
+}
+
+#message {
+  color: var(--muted);
+  font-size: .9rem;
+  text-align: center;
+  margin-top: .25rem;
+}
+
+#canvas-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: calc(100vh - 136px);
+  padding: .6rem;
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+  max-width: 1100px;
+  max-height: 700px;
+  border: 1px solid #222;
+  background: #000;
+  display: block;
+}
+
+footer {
+  padding: .4rem;
+  text-align: center;
+  color: #888;
+  font-size: .8rem;
+}
+
+/* 🌌 Spectral slider container */
+#spectral-slider-container {
+  max-width: 600px;
+  margin: 1rem auto;
+  text-align: center;
+}
+
+#spectralSlider {
+  width: 100%;
+  appearance: none;
+  background: #222;
+  height: 6px;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* Slider thumb */
+#spectralSlider::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+#spectralSlider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+#spectral-labels {
+  display: flex;
+  justify-content: space-between;
+  font-weight: bold;
+  margin-top: .4rem;
+  padding: 0 .3rem;
+  color: #ccc;
+}
+
+/* ⭐ Star options that appear below slider */
+#starOptions {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  justify-content: center;
+}
+#starOptions button {
+  background: #111;
+  color: #fff;
+  padding: .4rem .6rem;
+  border: 1px solid #333;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#starOptions button:hover {
+  background: #333;
+}
+
+/* 📱 Small screens */
+@media (max-width: 520px) {
+  #controls {
+    padding: .5rem;
+    gap: .4rem;
+  }
+  select {
+    min-width: unset;
+    width: 100%;
+  }
+}
