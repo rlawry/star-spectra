@@ -149,6 +149,8 @@ footer {
   background: #333;
 }
 
+#canvasRainbow { height: 40px; margin-top: 4px; }
+
 /* 📱 Small screens */
 @media (max-width: 520px) {
   #controls {
