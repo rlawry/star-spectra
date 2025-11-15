@@ -10,7 +10,7 @@
 
 <body>
   <header>
-    <h2 style="margin:.1rem">🌌 Star Spectra Viewer</h2>
+    <h2 id="titleMain" style="margin:.1rem">Star Spectra Viewer - Main Sequence</h2>
   </header>
 
   <div id="controls" aria-live="polite">
@@ -24,7 +24,7 @@
 
   <div id="canvas-container">
     <canvas id="spectrumCanvas"></canvas>
-    <canvas id="canvasRainbow" style="height:40px; margin-top:4px;"></canvas>
+    <canvas id="canvasRainbow"></canvas>
   </div>
 
   <footer>
@@ -42,19 +42,78 @@
     const sliderLabel = document.getElementById('sliderLabel');
     const messageEl = document.getElementById('message');
 
+    const titleMain = document.getElementById('titleMain');
+
+    let currentMode = 'main'; // 'main' or 'giants'
+    const SPECTRA_FILES = {
+      main: 'spectra.json',
+      giants: 'spectra_giants.json'
+    };
+
+    // Cache loaded datasets so we only fetch each JSON once
+    const spectraCache = {
+      main: null,
+      giants: null
+    };
+
     let spectraData = {};
     let keys = [];
     let currentKey = null;
-    let hoverLineX = null;      // Current hover line (while moving)
+    let hoverLineX = null;      // Current hover line X (while moving)
+    let hoverLineY = null;      // Current hover line Y (for label placement)
     let persistentLineX = null; // Last clicked/touched line
     let savedLines = [];        // Permanent lines (from "Keep Line")
     const marginBottom = 60;    // px for scale and labels
     const topPadding = 40;
     let plotHeight;
 
+    function setupTitleToggle() {
+      if (!titleMain) return;
+
+      titleMain.style.cursor = 'pointer';
+      titleMain.title = 'Click to toggle Main Sequence / Red Giants';
+
+      titleMain.addEventListener('click', async () => {
+        const nextMode = (currentMode === 'main') ? 'giants' : 'main';
+
+        // Update title text immediately for the Easter egg feel
+        titleMain.textContent =
+          nextMode === 'main'
+            ? 'Star Spectra Viewer - Main Sequence'
+            : 'Star Spectra Viewer - Red Giants';
+
+        showMessage(
+          nextMode === 'main'
+            ? 'Loading main-sequence spectra…'
+            : 'Loading red giant spectra…'
+        );
+
+        try {
+          await setMode(nextMode);
+          showMessage('');
+        } catch (err) {
+          console.error(err);
+          showMessage('Could not load spectra for this mode.', true);
+
+          // Revert title and mode on failure
+          const revert = (nextMode === 'main') ? 'giants' : 'main';
+          currentMode = revert;
+          titleMain.textContent =
+            revert === 'main'
+              ? 'Star Spectra Viewer - Main Sequence'
+              : 'Star Spectra Viewer - Red Giants';
+        }
+      });
+    }
+
     async function init() {
       makeCanvasSizing();
-      await loadSpectraWithFallbacks();
+      setupTitleToggle();
+
+      showMessage('Loading main-sequence spectra…');
+      await setMode('main'); // initial load from spectra.json
+      showMessage('');
+
       slider.addEventListener('input', () => {
         const idx = parseInt(slider.value, 10);
         if (keys[idx]) loadSpectrum(keys[idx]);
@@ -75,7 +134,12 @@
       resize();
     }
 
-    function getVisibleSpectrum(spectrum, visibleMin = 380, visibleMax = 780) {
+    function getVisibleSpectrum(
+      spectrum,
+      visibleMin = 380,
+      visibleMax = 780,
+      maxPoints = 1800   // cap number of samples we ever draw
+    ) {
       if (!spectrum || !spectrum.wavelength || !spectrum.flux) return null;
 
       const wl = spectrum.wavelength;
@@ -83,12 +147,27 @@
       if (wl.length !== fx.length || wl.length < 2) return null;
 
       // filter to visible range
-      const visibleIndices = wl.map((w, i) => (w >= visibleMin && w <= visibleMax ? i : -1))
+      const visibleIndices = wl
+        .map((w, i) => (w >= visibleMin && w <= visibleMax ? i : -1))
         .filter(i => i >= 0);
       if (visibleIndices.length < 2) return null;
 
-      const wlVis = visibleIndices.map(i => wl[i]);
-      const fxVis = visibleIndices.map(i => fx[i]);
+      let wlVis = visibleIndices.map(i => wl[i]);
+      let fxVis = visibleIndices.map(i => fx[i]);
+
+      // extra downsampling for very dense spectra (giants templates, etc.)
+      if (wlVis.length > maxPoints) {
+        const stride = Math.ceil(wlVis.length / maxPoints);
+        const wlDown = [];
+        const fxDown = [];
+        for (let i = 0; i < wlVis.length; i += stride) {
+          wlDown.push(wlVis[i]);
+          fxDown.push(fxVis[i]);
+        }
+        wlVis = wlDown;
+        fxVis = fxDown;
+      }
+
       const maxF = Math.max(...fxVis) || 1;
 
       return { wl: wlVis, fx: fxVis, maxF, minW: visibleMin, maxW: visibleMax };
@@ -136,22 +215,11 @@
       ctx.fillStyle = '#ddd';
       ctx.font = '12px system-ui, sans-serif';
       ctx.textBaseline = 'top';
+      ctx.textAlign = 'left';
       ctx.fillText(`Spectral Type: ${currentKey} — ${minW}–${maxW}nm`, 8, 8);
 
       // wavelength scale
       drawWavelengthScale(minW, maxW, ctx, cw, ch, marginBottom);
-
-      // hover line
-      if (hoverLineX !== null) {
-        ctx.save();
-        ctx.setLineDash([5, 5]);
-        ctx.strokeStyle = "red";
-        ctx.beginPath();
-        ctx.moveTo(hoverLineX, rainbowTop);
-        ctx.lineTo(hoverLineX, rainbowBottom);
-        ctx.stroke();
-        ctx.restore();
-      }
 
       // persistent line
       if (persistentLineX !== null) {
@@ -170,11 +238,62 @@
         ctx.lineTo(x, rainbowBottom);
         ctx.stroke();
       }
+
+      // --- hover measuring line and label (match Galaxy Viewer style) ---
+      if (hoverLineX !== null && hoverLineX >= 0 && hoverLineX <= cw) {
+        // Map x → wavelength (nm) across visible band
+        const wavelength = minW + (hoverLineX / cw) * (maxW - minW);  // 380–780 nm
+
+        // Same label formatting as Galaxy Viewer: "####.# nm"
+        const label = `${wavelength.toFixed(1)} nm`;
+
+        // Color at this wavelength (reuse your mapping)
+        const rgb = wavelengthToRGBObj(wavelength);
+        const col = `rgb(${rgb.r},${rgb.g},${rgb.b})`;
+
+        ctx.save();
+
+        // Colored vertical line with soft glow (like Galaxy Viewer)
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1;
+        ctx.shadowColor = `rgba(${rgb.r},${rgb.g},${rgb.b},0.6)`;
+        ctx.shadowBlur = 6;
+        ctx.beginPath();
+        ctx.moveTo(hoverLineX, rainbowTop + 2);
+        ctx.lineTo(hoverLineX, rainbowBottom);
+        ctx.stroke();
+
+        // Label Y position: follow cursor but stay inside the plot band
+        const ly = Math.max(
+          rainbowTop + 12,
+          Math.min(rainbowBottom - 12, (hoverLineY ?? rainbowBottom) - 10)
+        );
+
+        // Text style: bold, centered on the line, with dark outline behind (Galaxy Viewer style)
+        ctx.font = 'bold 14px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+
+        // Dark outline for readability
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+        ctx.strokeText(label, hoverLineX, ly);
+
+        // Fill in spectral color
+        ctx.fillStyle = col;
+        ctx.fillText(label, hoverLineX, ly);
+
+        ctx.restore();
+      }
+
+      // wavelength label for hover line, with glow in spectral color
     }
+
+
 
     function drawWavelengthScale(minW, maxW, ctx, cw, ch, marginBottom) {
       const range = Math.max(1e-6, maxW - minW);
-      const axisBottom = ch - marginBottom + 2; // baseline for ticks (labels go below)
+      const axisBottom = ch - marginBottom + 2; // baseline for ticks
       const pixels = cw;
 
       function chooseMajorStep(range, pixels, minLabelSpacing = 60) {
@@ -195,6 +314,7 @@
       const majorStep = chooseMajorStep(range, pixels, 60);
       const minorStep = majorStep / 10;
 
+      ctx.save();
       ctx.strokeStyle = '#888';
       ctx.fillStyle = '#ddd';
       ctx.lineWidth = 1;
@@ -202,35 +322,73 @@
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
 
+      const worldToX = w => ((w - minW) / range) * cw;
+
       const pixelsPerMajor = (majorStep / range) * cw;
       const minPixelSpacing = 56;
       const labelSkip = Math.max(1, Math.ceil(minPixelSpacing / pixelsPerMajor));
 
+      // --- Major ticks and label candidates ---
+      const labelCandidates = [];
       let majorIndex = 0;
       const startMajor = Math.ceil(minW / majorStep) * majorStep;
       const endMajor = Math.floor(maxW / majorStep) * majorStep;
+
       for (let w = startMajor; w <= endMajor + 1e-9; w += majorStep) {
-        const x = ((w - minW) / range) * cw;
+        const x = worldToX(w);
+        // major tick
         ctx.beginPath();
         ctx.moveTo(x, axisBottom);
         ctx.lineTo(x, axisBottom - 10);
         ctx.stroke();
 
         if (majorIndex % labelSkip === 0) {
-          ctx.fillText(String(Math.round(w)), x, axisBottom + 2);
+          labelCandidates.push({ w, x });
         }
         majorIndex++;
       }
 
+      // --- Minor ticks ---
       const startMinor = Math.ceil(minW / minorStep) * minorStep;
       for (let w = startMinor; w <= maxW + 1e-9; w += minorStep) {
         if (Math.abs((w / majorStep) - Math.round(w / majorStep)) < 1e-6) continue;
-        const x = ((w - minW) / range) * cw;
+        const x = worldToX(w);
         ctx.beginPath();
         ctx.moveTo(x, axisBottom);
         ctx.lineTo(x, axisBottom - 6);
         ctx.stroke();
       }
+
+      // --- Numeric labels, with edge and overlap avoidance ---
+      const EDGE_MARGIN = 6; // px from canvas edge
+      const leftLimit = EDGE_MARGIN;
+      const rightLimit = cw - EDGE_MARGIN;
+
+      let lastRight = -Infinity;
+      for (const lab of labelCandidates) {
+        const text = String(Math.round(lab.w));
+        const tw = ctx.measureText(text).width;
+        const half = tw / 2;
+
+        // Skip labels that would cross the left/right edges
+        if (lab.x - half < leftLimit || lab.x + half > rightLimit) continue;
+
+        // Skip labels that would collide with previous drawn label
+        if (lab.x - half < lastRight + EDGE_MARGIN) continue;
+
+        ctx.fillText(text, lab.x, axisBottom + 2);
+        lastRight = lab.x + half;
+      }
+
+      // --- Axis unit label ---
+      const unitLabel = 'Wavelength (nm)';
+      ctx.font = '11px system-ui, sans-serif';
+      const unitY = axisBottom + 20; // below tick numbers
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(unitLabel, cw / 2, unitY);
+
+      ctx.restore();
     }
 
     function wavelengthToRGBString(wavelength) {
@@ -268,6 +426,20 @@
       }
     }
 
+    function findIndexAtOrAbove(wlArr, target) {
+      if (!wlArr || wlArr.length === 0) return 0;
+      let lo = 0, hi = wlArr.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (wlArr[mid] < target) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      return lo;
+    }
+
     /**
      * DRAW RAINBOW into an offscreen buffer and paint the buffer to the visible canvas.
      * The offscreen buffer is stored on canvasRainbow._rainbowBuffer so magnifier can reuse it.
@@ -294,8 +466,9 @@
 
       for (let i = 0; i < bufW; i++) {
         const w = minW + (i / (bufW - 1)) * (maxW - minW);
-        let idx = wl.findIndex(v => v >= w);
-        if (idx < 0) idx = wl.length - 1;
+
+        // use binary search instead of findIndex
+        const idx = findIndexAtOrAbove(wl, w);
         const f = (fx[idx] || 0) / maxF;
 
         const rgb = wavelengthToRGBObj(w);
@@ -303,6 +476,7 @@
         let g = Math.round(Math.max(0, Math.min(255, rgb.g * f)));
         let b = Math.round(Math.max(0, Math.min(255, rgb.b * f)));
 
+        // fall back to gray if nearly neutral
         if (Math.abs(r - g) < 2 && Math.abs(g - b) < 2) {
           const gray = Math.min(255, Math.round(40 + 200 * f));
           r = g = b = gray;
@@ -321,7 +495,6 @@
       ctxR.clearRect(0, 0, cw, ch);
       ctxR.drawImage(buf, 0, 0, bufW, bufH, 0, 0, cw, ch);
     }
-
 
     /**
      * Enable magnifier on a canvasRainbow element using the buffer produced by drawSpectrumRainbow.
@@ -344,14 +517,14 @@
           const buf = canvasRainbow._rainbowBuffer;
           if (!buf) return;
 
-          // Ensure transform is set so we draw in CSS coordinates
+          // Draw in CSS coordinates
           ctxR.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-          // redraw base rainbow from buffer
+          // Redraw base rainbow
           ctxR.clearRect(0, 0, cw, ch);
           ctxR.drawImage(buf, 0, 0, buf.width, buf.height, 0, 0, cw, ch);
 
-          // draw vertical indicator on main rainbow showing exact position
+          // Vertical indicator on the rainbow itself
           ctxR.save();
           ctxR.globalAlpha = 0.9;
           ctxR.strokeStyle = 'rgba(255,80,0,0.9)';
@@ -363,38 +536,36 @@
           ctxR.stroke();
           ctxR.restore();
 
-          // magnifier geometry (CSS units)
-          const magWidth = 140;
-          const magHeight = 84;
-          const margin = 0;
+          // Magnifier geometry (responsive to rainbow size)
+          const margin = 8;
+          const magWidth = Math.min(cw * 0.45, 260);
+          const magHeight = Math.min(ch * 0.8, 140);
+          const zoom = 4;
           const magX = Math.min(cw - magWidth - margin, xCSS + 15);
           const magY = margin;
-          const zoom = 4;
 
-          // white background + border
-          ctxR.fillStyle = "rgba(255,255,255,0.95)";
-          ctxR.fillRect(magX - 1, magY - 1, magWidth + 2, magHeight + 2);
+          const destW = magWidth;
+          const destH = magHeight - 24; // image slice height
+
+          // Dark background behind image area only (no extra white band)
+          ctxR.fillStyle = "rgba(0, 0, 0, 0.85)";
+          ctxR.fillRect(magX - 1, magY - 1, magWidth + 2, destH + 2);
           ctxR.strokeStyle = "#333";
           ctxR.lineWidth = 1;
-          ctxR.strokeRect(magX - 1, magY - 1, magWidth + 2, magHeight + 2);
+          ctxR.strokeRect(magX - 1, magY - 1, magWidth + 2, destH + 2);
 
-          // compute source rectangle in buffer (device pixels)
+          // Source rectangle in buffer (device pixels)
           const centerBufX = (xCSS / cw) * buf.width;
-          // source width in CSS coords is magWidth / zoom; convert to buffer (device) pixels
           const srcWidthBuf = Math.max(1, Math.floor((magWidth / zoom) * dpr));
           let srcX = Math.round(centerBufX - srcWidthBuf / 2);
           srcX = Math.max(0, Math.min(buf.width - srcWidthBuf, srcX));
           const srcY = 0;
           const srcH = buf.height;
 
-          // destination inside magnifier (leave small area for label/tick)
-          const destW = magWidth;
-          const destH = magHeight - 20;
-
-          // draw high-resolution slice into magnifier using drawImage (preserves detail)
+          // Draw high-res slice into magnifier
           ctxR.drawImage(buf, srcX, srcY, srcWidthBuf, srcH, magX, magY, destW, destH);
 
-          // tickmark inside magnifier (center)
+          // Tick mark inside magnifier (center)
           const tickX = magX + destW / 2;
           ctxR.strokeStyle = "black";
           ctxR.lineWidth = 1;
@@ -403,95 +574,148 @@
           ctxR.lineTo(tickX, magY + destH);
           ctxR.stroke();
 
-          // Get visible spectrum using the helper
+          // Visible spectrum for wavelength mapping
           const visible = getVisibleSpectrum(spectrum);
           if (!visible) return;
 
-          const { wl, fx, minW, maxW } = visible; // minW/maxW = restricted to 380–780 nm
-
-          // map xCSS (column in canvas) to wavelength in visible range
+          const { minW, maxW } = visible; // 380–780 nm
           const centerWavelength = minW + (xCSS / cw) * (maxW - minW);
 
-          const text = `${Math.round(centerWavelength)} nm`;
-          const textMetrics = ctxR.measureText(text);
-
-          const textWidth = textMetrics.width;
-          const textHeight = 12; // approximate height for 12px font
-
-          // Draw semi-transparent dark gray rectangle behind text
-          ctxR.fillStyle = "rgba(50,50,50,0.5)"; // dark gray, 50% opacity
-          ctxR.fillRect(magX + 6, magY + destH - 40, textWidth + 4, textHeight + 4); // small padding
-
-          // draw label
-          ctxR.fillStyle = "white";
+          // Label with tenths precision
+          const text = `${centerWavelength.toFixed(1)} nm`;
           ctxR.font = "12px system-ui, sans-serif";
+          const textMetrics = ctxR.measureText(text);
+          const textWidth = textMetrics.width;
+          const textHeight = 12;
 
-          ctxR.textBaseline = 'top';
-          ctxR.fillText(text, magX + 6 + 2, magY + destH - 40 + 2); // offset slightly for padding
+          // Label background
+          const labelX = magX + 6;
+          const labelY = magY + destH - (textHeight + 6);
+          ctxR.fillStyle = "rgba(50,50,50,0.75)";
+          ctxR.fillRect(labelX, labelY, textWidth + 6, textHeight + 4);
+
+          // Label text
+          ctxR.fillStyle = "white";
+          ctxR.textBaseline = "top";
+          ctxR.fillText(text, labelX + 3, labelY + 2);
+
+          // --- Update tracer on main spectrum canvas ---
+          if (typeof plotHeight === "number" && plotHeight > 0 && currentKey && spectraData[currentKey]) {
+            const specCW = canvas.clientWidth || canvas.width / (devicePixelRatio || 1);
+            if (specCW > 0) {
+              const specX = ((centerWavelength - minW) / (maxW - minW)) * specCW;
+              const rainbowTop = topPadding;
+              const rainbowBottom = topPadding + plotHeight;
+              const specY = (rainbowTop + rainbowBottom) / 2;
+
+              hoverLineX = specX;
+              hoverLineY = specY;
+              drawSpectrum(spectraData[currentKey]);
+            }
+          }
         }
 
         // pointer handlers: unify mouse & touch using clientX
         function onMovePointer(e) {
+          let clientX;
           if (e.touches && e.touches.length) {
-            drawMagnifierAt(e.touches[0].clientX);
+            const t = e.touches[0];
+            clientX = t.clientX;
+            e.preventDefault(); // stop page scroll while using magnifier
           } else {
-            drawMagnifierAt(e.clientX);
+            clientX = e.clientX;
           }
+          drawMagnifierAt(clientX);
         }
+
         function onLeave() {
           // redraw base only (clear magnifier)
           const buf = canvasRainbow._rainbowBuffer;
           if (buf) {
             const cw = Math.max(1, canvasRainbow.clientWidth);
             const ch = Math.max(1, canvasRainbow.clientHeight);
-            // ensure proper transform
             ctxR.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctxR.clearRect(0, 0, cw, ch);
             ctxR.drawImage(buf, 0, 0, buf.width, buf.height, 0, 0, cw, ch);
           } else {
             ctxR.clearRect(0, 0, canvasRainbow.clientWidth, canvasRainbow.clientHeight);
           }
+
+          // clear tracer on main spectrum canvas when finger leaves
+          hoverLineX = null;
+          hoverLineY = null;
+          if (currentKey && spectraData[currentKey]) {
+            drawSpectrum(spectraData[currentKey]);
+          }
         }
 
         canvasRainbow.addEventListener('mousemove', onMovePointer, { passive: true });
-        canvasRainbow.addEventListener('touchstart', onMovePointer, { passive: true });
+        canvasRainbow.addEventListener('touchstart', onMovePointer, { passive: false });
         canvasRainbow.addEventListener('touchmove', onMovePointer, { passive: false });
         canvasRainbow.addEventListener('mouseleave', onLeave);
-        canvasRainbow.addEventListener('touchend', onLeave);
+        canvasRainbow.addEventListener('touchend', onLeave, { passive: true });
+        canvasRainbow.addEventListener('touchcancel', onLeave, { passive: true });
+
         canvasRainbow._magnifierInstalled = true;
       }
     }
 
-
-
-    async function loadSpectraWithFallbacks() {
-      showMessage('Loading spectra…');
-
-      const candidates = ['spectra.json'];
-      let result = null;
-      for (const p of candidates) {
-        result = await tryFetchJSON(p);
-        if (result && result.json) break;
+    function pickInitialIndexForMode(mode, keys) {
+      // For main sequence, keep your old default if possible (27)
+      if (mode === 'main') {
+        return Math.min(27, Math.max(0, keys.length - 1));
       }
+      // For giants, just pick the middle of the sequence
+      return Math.floor(keys.length / 2);
+    }
+
+    async function loadSpectraForMode(mode) {
+      const file = SPECTRA_FILES[mode] || SPECTRA_FILES.main;
+      const result = await tryFetchJSON(file);
 
       if (!result || result.error) {
-        showMessage('Could not load any spectra JSON.', true);
-        return;
+        throw new Error(`Could not load spectra from ${file}`);
       }
 
       spectraData = normalizeSpectra(result.json);
       keys = Object.keys(spectraData).sort(spectralComparator);
 
       if (keys.length === 0) {
-        showMessage('JSON loaded but no spectra found.', true);
-        return;
+        throw new Error(`JSON loaded from ${file} but no spectra found.`);
       }
 
       slider.max = keys.length - 1;
-      slider.value = 0;
-      sliderLabel.textContent = keys[0];
-      loadSpectrum(keys[0]);
-      showMessage(``);
+      const idx = pickInitialIndexForMode(mode, keys);
+      slider.value = idx;
+      sliderLabel.textContent = keys[idx];
+      loadSpectrum(keys[idx]);
+
+      // Cache this dataset so we can switch back instantly later
+      spectraCache[mode] = {
+        data: spectraData,
+        keys: [...keys]
+      };
+    }
+
+    async function setMode(mode) {
+      if (mode === currentMode && spectraCache[mode]) return;
+      currentMode = mode;
+
+      const cached = spectraCache[mode];
+      if (cached) {
+        // Reuse already-loaded data
+        spectraData = cached.data;
+        keys = [...cached.keys];
+
+        slider.max = keys.length - 1;
+        const idx = pickInitialIndexForMode(mode, keys);
+        slider.value = idx;
+        sliderLabel.textContent = keys[idx];
+        loadSpectrum(keys[idx]);
+        return;
+      }
+
+      await loadSpectraForMode(mode);
     }
 
     function normalizeSpectra(raw) {
@@ -555,23 +779,75 @@
 
       return { r: R, g: G, b: B };
     }
-    canvas.addEventListener("mousemove", (e) => {
+
+    function updateSpectrumHoverFromClientXY(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
+      const mx = clientX - rect.left;
+      const my = clientY - rect.top;
+
       const rainbowTop = topPadding;
       const rainbowBottom = topPadding + plotHeight;
 
+      // Only show hover when pointer is inside the plotted spectrum band
       if (my >= rainbowTop && my <= rainbowBottom) {
         hoverLineX = mx;
+        hoverLineY = my;
       } else {
         hoverLineX = null;
+        hoverLineY = null;
       }
 
-      drawSpectrum(spectraData[currentKey]); // Force redraw immediately
+      if (currentKey && spectraData[currentKey]) {
+        drawSpectrum(spectraData[currentKey]);
+      }
+    }
 
-      console.log("work");
+    canvas.addEventListener("mousemove", (e) => {
+      updateSpectrumHoverFromClientXY(e.clientX, e.clientY);
     });
+
+    // Clear hover when mouse leaves the spectrum
+    canvas.addEventListener("mouseleave", () => {
+      hoverLineX = null;
+      hoverLineY = null;
+      if (currentKey && spectraData[currentKey]) {
+        drawSpectrum(spectraData[currentKey]);
+      }
+    });
+
+    // TOUCH: press-and-hold hover on spectrum
+    canvas.addEventListener("touchstart", (e) => {
+      if (e.touches && e.touches.length) {
+        e.preventDefault(); // prevent scrolling
+        const t = e.touches[0];
+        updateSpectrumHoverFromClientXY(t.clientX, t.clientY);
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchmove", (e) => {
+      if (e.touches && e.touches.length) {
+        e.preventDefault(); // keep finger drag inside canvas, no page scroll
+        const t = e.touches[0];
+        updateSpectrumHoverFromClientXY(t.clientX, t.clientY);
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchend", () => {
+      // lift finger: remove the hover tracer
+      hoverLineX = null;
+      hoverLineY = null;
+      if (currentKey && spectraData[currentKey]) {
+        drawSpectrum(spectraData[currentKey]);
+      }
+    }, { passive: true });
+
+    canvas.addEventListener("touchcancel", () => {
+      hoverLineX = null;
+      hoverLineY = null;
+      if (currentKey && spectraData[currentKey]) {
+        drawSpectrum(spectraData[currentKey]);
+      }
+    }, { passive: true });
 
     canvas.addEventListener("click", () => {
       if (hoverLineX !== null) {

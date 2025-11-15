@@ -149,7 +149,16 @@ footer {
   background: #333;
 }
 
-#canvasRainbow { height: 40px; margin-top: 4px; }
+#canvasRainbow {
+  width: 100%;
+  height: 120px;        /* increase this to taste */
+  margin-top: 4px;
+}
+
+#spectrumCanvas,
+#canvasRainbow {
+  touch-action: none;
+}
 
 /* 📱 Small screens */
 @media (max-width: 520px) {
