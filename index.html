@@ -18,7 +18,6 @@
     <input type="range" id="spectralSlider" min="0" max="0" step="1" value="0" aria-label="Spectral type slider">
     <span id="sliderLabel">—</span>
     <div id="message" role="status">Initializing…</div>
-    <button id="keepLineBtn">Keep Line</button>
     <button id="clearLinesBtn">Clear Lines</button>
 
     <!-- Hidden Easter Egg: appears when user presses "E" -->
@@ -47,7 +46,15 @@
   <footer>
     Spectral types based on Kesseli et al. (2017),
     <a href="https://arxiv.org/abs/1702.06957">arXiv:1702.06957</a>
-    and the SDSS BOSS Spectrograph Empirical Templates
+    and the SDSS BOSS Spectrograph Empirical Templates <br>
+    <small>
+      Vacuum wavelengths and air–vacuum conversions follow:
+      Ciddor, P. E. (1996), “Refractive index of air: new equations for the visible and near infrared,”
+      <em>Applied Optics</em>, 35, 1566–1573;
+      Morton, D. C. (2003), “Atomic Data for Resonance Absorption Lines. III. Wavelengths longward of the Lyman limit
+      for the elements hydrogen to gallium,”
+      <em>ApJS</em>, 149, 205–238.
+    </small>
   </footer>
 
   <script>
@@ -80,10 +87,11 @@
     let spectraData = {};
     let keys = [];
     let currentKey = null;
-    let hoverLineX = null;      // Current hover line X (while moving)
-    let hoverLineY = null;      // Current hover line Y (for label placement)
-    let persistentLineX = null; // Last clicked/touched line
-    let savedLines = [];        // Permanent lines (from "Keep Line")
+    let hoverLineX = null;       // hover line X (px in spectrum canvas)
+    let hoverLineY = null;       // hover line Y (for label placement)
+    // Store red lines in WAVELENGTH (nm), not in pixels:
+    let persistentLineNm = null; // last clicked/touched line in nm
+    let savedLines = [];         // array of wavelengths (nm)
     const marginBottom = 60;    // px for scale and labels
     const topPadding = 40;
     let plotHeight;
@@ -93,67 +101,72 @@
     // now extended down into the ~400 nm range where appropriate.
     const ELEMENT_LINE_SETS = {
       hydrogen: {
-        displayName: 'Hydrogen (Balmer)',
+        displayName: 'Hydrogen (Balmer, air λ)',
         lines: [
-          { wavelength: 656.3, label: 'Hα' },
-          { wavelength: 486.1, label: 'Hβ' },
-          { wavelength: 434.0, label: 'Hγ' },
-          { wavelength: 410.2, label: 'Hδ' },
-          { wavelength: 397.0, label: 'Hε' }           // new, in the 400 nm range
+          { wavelength: 656.279, label: 'Hα' }, // 6562.79 Å
+          { wavelength: 486.135, label: 'Hβ' }, // 4861.35 Å
+          { wavelength: 434.047, label: 'Hγ' }, // 4340.47 Å
+          { wavelength: 410.173, label: 'Hδ' }, // 4101.73 Å
+          { wavelength: 397.007, label: 'Hε' }  // 3970.07 Å
         ]
       },
+
       helium: {
         displayName: 'Helium',
         lines: [
-          { wavelength: 447.1, label: 'He I' },
-          { wavelength: 468.6, label: 'He II' },
-          { wavelength: 587.6, label: 'He I' },
-          { wavelength: 402.6, label: 'He I' }         // new, in the 400 nm range
+          { wavelength: 402.619, label: 'He I' },   // 4026.191 Å
+          { wavelength: 447.148, label: 'He I' },   // 4471.479 Å
+          { wavelength: 587.561, label: 'He I' },   // 5875.615 Å (D3)
+          { wavelength: 468.571, label: 'He II' }   // 4685.71 Å
         ]
       },
+
       sodium: {
         displayName: 'Sodium D',
         lines: [
-          { wavelength: 589.0, label: 'Na D2' },
-          { wavelength: 589.6, label: 'Na D1' }
-          // Na has no strong textbook visible doublet in the low-400 nm range,
-          // so we keep this set focused on the D lines.
+          { wavelength: 588.995, label: 'Na D2' },  // 5889.950 Å
+          { wavelength: 589.592, label: 'Na D1' }   // 5895.924 Å
         ]
       },
+
       magnesium: {
         displayName: 'Magnesium b / II',
         lines: [
-          { wavelength: 516.7, label: 'Mg b1' },
-          { wavelength: 517.3, label: 'Mg b2' },
-          { wavelength: 518.4, label: 'Mg b3' },
-          { wavelength: 448.1, label: 'Mg II' }        // new, in the 400 nm range
+          { wavelength: 516.732, label: 'Mg b1' },  // Mg I 5167.322 Å
+          { wavelength: 517.268, label: 'Mg b2' },  // Mg I 5172.684 Å
+          { wavelength: 518.360, label: 'Mg b3' },  // Mg I 5183.604 Å
+          { wavelength: 448.123, label: 'Mg II' }   // ≈ mean of Mg II 4481.126 & 4481.325 Å
         ]
       },
+
       oxygen: {
         displayName: 'Oxygen',
         lines: [
-          { wavelength: 495.9, label: '[O III]' },
-          { wavelength: 500.7, label: '[O III]' },
-          { wavelength: 436.3, label: '[O III]' }      // new, in the 400 nm range
+          { wavelength: 495.891, label: '[O III]' }, // 4958.911 Å
+          { wavelength: 500.684, label: '[O III]' }, // 5006.843 Å
+          { wavelength: 436.321, label: '[O III]' }  // 4363.209 Å
         ]
       },
+
       iron: {
         displayName: 'Iron',
         lines: [
-          { wavelength: 438.3, label: 'Fe I' },
-          { wavelength: 527.0, label: 'Fe I' },
-          { wavelength: 532.8, label: 'Fe I' },
-          { wavelength: 404.6, label: 'Fe I' }         // new, in the 400 nm range
+          { wavelength: 438.354, label: 'Fe I' },    // 4383.545 Å
+          { wavelength: 527.036, label: 'Fe I' },    // 5270.356 Å
+          { wavelength: 532.804, label: 'Fe I' },    // 5328.039 Å
+          { wavelength: 404.581, label: 'Fe I' }     // 4045.812 Å
         ]
       },
+
       calcium: {
-        displayName: 'Calcium (Ca II)',
+        displayName: 'Calcium (Ca II H & K)',
         lines: [
-          { wavelength: 396.9, label: 'Ca II' },
-          { wavelength: 393.3, label: 'Ca II' }
+          { wavelength: 396.847, label: 'Ca II H' }, // 3968.469 Å
+          { wavelength: 393.366, label: 'Ca II K' }  // 3933.663 Å
         ]
       }
     };
+
 
 
     let selectedElementKey = '';
@@ -175,6 +188,118 @@
         }
       });
     }
+
+    // ---- X-zoom state (like galaxy viewer) ----
+    const VIS_MIN_NM = 380;
+    const VIS_MAX_NM = 780;
+    const MIN_X_SPAN = 5;       // nm – smallest zoom window
+
+    let viewMinNm = VIS_MIN_NM; // current visible wavelength window
+    let viewMaxNm = VIS_MAX_NM;
+
+    function airToVacNm(lambdaAirNm) {
+      const lambdaA = lambdaAirNm * 10.0; // nm → Å
+      const sigma2 = (1.0e4 / lambdaA) ** 2; // (µm⁻¹)²
+
+      const nMinus1 =
+        0.0000834254 +
+        0.02406147 / (130.0 - sigma2) +
+        0.00015998 / (38.9 - sigma2);
+
+      const n = 1.0 + nMinus1;
+      const lambdaVacA = lambdaA * n;
+      return lambdaVacA / 10.0; // back to nm
+    }
+
+    function fitSpanToVisible(center, span) {
+      const maxSpan = VIS_MAX_NM - VIS_MIN_NM;
+      span = Math.max(MIN_X_SPAN, Math.min(span, maxSpan));
+
+      let lo = center - span * 0.5;
+      let hi = center + span * 0.5;
+
+      if (lo < VIS_MIN_NM) {
+        lo = VIS_MIN_NM;
+        hi = lo + span;
+      }
+      if (hi > VIS_MAX_NM) {
+        hi = VIS_MAX_NM;
+        lo = hi - span;
+      }
+      return [lo, hi];
+    }
+
+    function sampleFluxLinear(wl, fx, w) {
+      const n = wl.length;
+      if (!n) return 0;
+      if (w <= wl[0]) return fx[0];
+      if (w >= wl[n - 1]) return fx[n - 1];
+
+      // binary search: find i such that wl[i] <= w <= wl[i+1]
+      let lo = 0, hi = n - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (wl[mid] <= w) lo = mid;
+        else hi = mid;
+      }
+      const x0 = wl[lo], x1 = wl[hi];
+      const y0 = fx[lo], y1 = fx[hi];
+      const t = (w - x0) / (x1 - x0 || 1e-9);
+      return y0 * (1 - t) + y1 * t;
+    }
+
+
+    function zoomXAround(centerNm, factor) {
+      const span = (viewMaxNm - viewMinNm) * factor; // factor < 1 ⇒ zoom in
+      [viewMinNm, viewMaxNm] = fitSpanToVisible(centerNm, span);
+
+      if (currentKey && spectraData[currentKey]) {
+        const spectrum = spectraData[currentKey];
+        drawSpectrum(spectrum);
+        drawSpectrumRainbow(spectrum, document.getElementById('canvasRainbow'));
+      }
+    }
+
+    function zoomXCentered(factor) {
+      const center = 0.5 * (viewMinNm + viewMaxNm);
+      zoomXAround(center, factor);
+    }
+
+    function wheelZoomFactor(deltaY) {
+      // same curve as galaxy viewer
+      return Math.exp(deltaY * 0.0012);
+    }
+
+    // --- X-pan state (mouse + touch) ---
+    let isMousePanning = false;
+    let mouseLastX = 0;
+    let mouseDidPan = false;   // true if we actually panned during this mouse drag
+
+    let pinchActive = false;
+    let pinchPrevDist = 0;
+    let pinchAnchorNm = null;
+
+    let touchPanActive = false;
+    let touchPanStartX = 0;
+    let touchLastX = 0;
+    const TOUCH_PAN_THRESHOLD = 6; // px before we treat a touch as pan
+
+    function panXByPixels(dxPx, cssWidth) {
+      const span = viewMaxNm - viewMinNm;
+      if (span <= 0 || !cssWidth) return;
+
+      const nmPerPx = span / cssWidth;
+      // negative dx = drag left → move window right
+      let lo = viewMinNm - dxPx * nmPerPx;
+      let hi = viewMaxNm - dxPx * nmPerPx;
+
+      const center = 0.5 * (lo + hi);
+      // keep the same span, just clamp into [VIS_MIN_NM, VIS_MAX_NM]
+      [lo, hi] = fitSpanToVisible(center, span);
+      viewMinNm = lo;
+      viewMaxNm = hi;
+    }
+
 
     function setupTitleToggle() {
       if (!titleMain) return;
@@ -247,7 +372,7 @@
       spectrum,
       visibleMin = 380,
       visibleMax = 780,
-      maxPoints = 1800   // cap number of samples we ever draw
+      maxPoints = 1800   // optional cap; null/0 => no cap
     ) {
       if (!spectrum || !spectrum.wavelength || !spectrum.flux) return null;
 
@@ -255,7 +380,6 @@
       const fx = spectrum.flux;
       if (wl.length !== fx.length || wl.length < 2) return null;
 
-      // filter to visible range
       const visibleIndices = wl
         .map((w, i) => (w >= visibleMin && w <= visibleMax ? i : -1))
         .filter(i => i >= 0);
@@ -264,8 +388,8 @@
       let wlVis = visibleIndices.map(i => wl[i]);
       let fxVis = visibleIndices.map(i => fx[i]);
 
-      // extra downsampling for very dense spectra (giants templates, etc.)
-      if (wlVis.length > maxPoints) {
+      // Downsample only if a cap is provided and we exceed it
+      if (maxPoints && wlVis.length > maxPoints) {
         const stride = Math.ceil(wlVis.length / maxPoints);
         const wlDown = [];
         const fxDown = [];
@@ -278,12 +402,24 @@
       }
 
       const maxF = Math.max(...fxVis) || 1;
-
       return { wl: wlVis, fx: fxVis, maxF, minW: visibleMin, maxW: visibleMax };
     }
 
     function drawSpectrum(spectrum) {
-      const visible = getVisibleSpectrum(spectrum);
+      const fullSpan = VIS_MAX_NM - VIS_MIN_NM;       // ~400 nm
+      const span = Math.max(1e-6, viewMaxNm - viewMinNm);
+      const zoomFactor = fullSpan / span;            // >1 when zoomed in
+
+      let maxPoints;
+      // When zoomed in tight (e.g. < 30 nm), keep ALL visible points
+      if (span <= 30) {
+        maxPoints = null;                            // no downsampling
+      } else {
+        // Otherwise: allow more points as we zoom in, but cap for safety
+        maxPoints = Math.round(1800 * Math.min(zoomFactor, 8)); // up to ~14k
+      }
+
+      const visible = getVisibleSpectrum(spectrum, viewMinNm, viewMaxNm, maxPoints);
       if (!visible) {
         showMessage('No data in visible spectrum range (380–780nm).', true);
         return;
@@ -325,22 +461,31 @@
       ctx.font = '12px system-ui, sans-serif';
       ctx.textBaseline = 'top';
       ctx.textAlign = 'left';
-      ctx.fillText(`Spectral Type: ${currentKey} — ${minW}–${maxW}nm`, 8, 8);
+      ctx.fillText(`Spectral Type: ${currentKey} — ${minW.toFixed(1)}–${maxW.toFixed(1)}nm`, 8, 8);
 
       // wavelength scale
       drawWavelengthScale(minW, maxW, ctx, cw, ch, marginBottom);
 
-      // persistent line
-      if (persistentLineX !== null) {
+      function wavelengthToX(wl, minW, maxW, cw) {
+        const range = Math.max(1e-6, maxW - minW);
+        return ((wl - minW) / range) * cw;
+      }
+
+      // persistent line (single)
+      if (persistentLineNm !== null &&
+        persistentLineNm >= minW && persistentLineNm <= maxW) {
+        const x = wavelengthToX(persistentLineNm, minW, maxW, cw);
         ctx.strokeStyle = "red";
         ctx.beginPath();
-        ctx.moveTo(persistentLineX, rainbowTop);
-        ctx.lineTo(persistentLineX, rainbowBottom);
+        ctx.moveTo(x, rainbowTop);
+        ctx.lineTo(x, rainbowBottom);
         ctx.stroke();
       }
 
-      // saved lines
-      for (let x of savedLines) {
+      // saved lines (multiple)
+      for (const wlNm of savedLines) {
+        if (wlNm < minW || wlNm > maxW) continue; // off-screen in this zoom
+        const x = wavelengthToX(wlNm, minW, maxW, cw);
         ctx.strokeStyle = "red";
         ctx.beginPath();
         ctx.moveTo(x, rainbowTop);
@@ -453,13 +598,13 @@
       }
 
       for (const line of set.lines) {
-        const wl = line.wavelength;
+        const wl = airToVacNm(line.wavelength);
         if (wl < minW || wl > maxW) continue;
 
         const x = ((wl - minW) / range) * cw;
 
         // dashed vertical guideline
-        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
         ctx.beginPath();
         ctx.moveTo(x, rainbowTop);
         ctx.lineTo(x, rainbowBottom);
@@ -648,12 +793,22 @@
      * The offscreen buffer is stored on canvasRainbow._rainbowBuffer so magnifier can reuse it.
      */
     function drawSpectrumRainbow(spectrum, canvasRainbow) {
-      const visible = getVisibleSpectrum(spectrum);
+      const fullSpan = VIS_MAX_NM - VIS_MIN_NM;
+      const span = Math.max(1e-6, viewMaxNm - viewMinNm);
+      const zoomFactor = fullSpan / span;
+      let maxPoints;
+
+      if (span <= 30) {
+        maxPoints = null;      // keep all points in zoom window
+      } else {
+        maxPoints = Math.round(1800 * Math.min(zoomFactor, 8));
+      }
+
+      const visible = getVisibleSpectrum(spectrum, viewMinNm, viewMaxNm, maxPoints);
       if (!visible) return;
 
       const { wl, fx, maxF, minW, maxW } = visible;
 
-      // CSS sizes
       const cw = Math.max(1, canvasRainbow.clientWidth);
       const ch = Math.max(1, canvasRainbow.clientHeight);
 
@@ -667,19 +822,19 @@
       const bctx = buf.getContext('2d');
       bctx.clearRect(0, 0, bufW, bufH);
 
-      for (let i = 0; i < bufW; i++) {
-        const w = minW + (i / (bufW - 1)) * (maxW - minW);
+      const totalSpan = maxW - minW || 1;
 
-        // use binary search instead of findIndex
-        const idx = findIndexAtOrAbove(wl, w);
-        const f = (fx[idx] || 0) / maxF;
+      for (let i = 0; i < bufW; i++) {
+        const w = minW + (i / (bufW - 1)) * totalSpan;
+
+        // linear interpolation instead of nearest index
+        const f = sampleFluxLinear(wl, fx, w) / maxF;
 
         const rgb = wavelengthToRGBObj(w);
         let r = Math.round(Math.max(0, Math.min(255, rgb.r * f)));
         let g = Math.round(Math.max(0, Math.min(255, rgb.g * f)));
         let b = Math.round(Math.max(0, Math.min(255, rgb.b * f)));
 
-        // fall back to gray if nearly neutral
         if (Math.abs(r - g) < 2 && Math.abs(g - b) < 2) {
           const gray = Math.min(255, Math.round(40 + 200 * f));
           r = g = b = gray;
@@ -698,6 +853,7 @@
       ctxR.clearRect(0, 0, cw, ch);
       ctxR.drawImage(buf, 0, 0, bufW, bufH, 0, 0, cw, ch);
     }
+
 
     /**
      * Enable magnifier on a canvasRainbow element using the buffer produced by drawSpectrumRainbow.
@@ -739,7 +895,7 @@
           ctxR.stroke();
           ctxR.restore();
 
-          // Magnifier geometry (responsive to rainbow size)
+          // Magnifier geometry (same as before)
           const margin = 8;
           const magWidth = Math.min(cw * 0.45, 260);
           const magHeight = Math.min(ch * 0.8, 140);
@@ -750,7 +906,6 @@
           const destW = magWidth;
           const destH = magHeight - 24; // image slice height
 
-          // Dark background behind image area only (no extra white band)
           ctxR.fillStyle = "rgba(0, 0, 0, 0.85)";
           ctxR.fillRect(magX - 1, magY - 1, magWidth + 2, destH + 2);
           ctxR.strokeStyle = "#333";
@@ -777,11 +932,12 @@
           ctxR.lineTo(tickX, magY + destH);
           ctxR.stroke();
 
-          // Visible spectrum for wavelength mapping
-          const visible = getVisibleSpectrum(spectrum);
-          if (!visible) return;
+          // --- wavelength mapping: use same window as rainbow / main plot ---
+          const range = canvasRainbow._rainbowRange || { minW: viewMinNm, maxW: viewMaxNm };
+          const minW = range.minW;
+          const maxW = range.maxW;
+          if (!(maxW > minW)) return;
 
-          const { minW, maxW } = visible; // 380–780 nm
           const centerWavelength = minW + (xCSS / cw) * (maxW - minW);
 
           // Label with tenths precision
@@ -802,11 +958,17 @@
           ctxR.textBaseline = "top";
           ctxR.fillText(text, labelX + 3, labelY + 2);
 
-          // --- Update tracer on main spectrum canvas ---
-          if (typeof plotHeight === "number" && plotHeight > 0 && currentKey && spectraData[currentKey]) {
+          // --- Update tracer on main spectrum canvas (already using viewMinNm/viewMaxNm) ---
+          if (typeof plotHeight === "number" &&
+            plotHeight > 0 &&
+            currentKey &&
+            spectraData[currentKey] &&
+            viewMaxNm > viewMinNm) {
+
             const specCW = canvas.clientWidth || canvas.width / (devicePixelRatio || 1);
             if (specCW > 0) {
-              const specX = ((centerWavelength - minW) / (maxW - minW)) * specCW;
+              const specX = ((centerWavelength - viewMinNm) /
+                (viewMaxNm - viewMinNm)) * specCW;
               const rainbowTop = topPadding;
               const rainbowBottom = topPadding + plotHeight;
               const specY = (rainbowTop + rainbowBottom) / 2;
@@ -817,6 +979,7 @@
             }
           }
         }
+
 
         // pointer handlers: unify mouse & touch using clientX
         function onMovePointer(e) {
@@ -1005,12 +1168,46 @@
       }
     }
 
-    canvas.addEventListener("mousemove", (e) => {
-      updateSpectrumHoverFromClientXY(e.clientX, e.clientY);
+    // --- Mouse pan + hover ---
+    canvas.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;      // left button only
+      isMousePanning = true;
+      mouseLastX = e.clientX;
+      mouseDidPan = false;             // reset for this drag
+      e.preventDefault();
     });
 
-    // Clear hover when mouse leaves the spectrum
+    window.addEventListener("mouseup", () => {
+      isMousePanning = false;
+    });
+
+    canvas.addEventListener("mousemove", (e) => {
+      const cw = canvas.clientWidth || (canvas.width / (devicePixelRatio || 1));
+
+      if (isMousePanning) {
+        const dx = e.clientX - mouseLastX;
+        mouseLastX = e.clientX;
+
+        // Only treat as a pan if we moved more than a tiny threshold
+        if (Math.abs(dx) > 1) {
+          mouseDidPan = true;                 // mark this as a drag-pan
+          panXByPixels(dx, cw);
+
+          if (currentKey && spectraData[currentKey]) {
+            const spectrum = spectraData[currentKey];
+            drawSpectrum(spectrum);
+            drawSpectrumRainbow(spectrum, document.getElementById("canvasRainbow"));
+          }
+        }
+      } else {
+        // normal hover tracer
+        updateSpectrumHoverFromClientXY(e.clientX, e.clientY);
+      }
+    });
+
+    // Clear hover and stop pan when mouse leaves the spectrum
     canvas.addEventListener("mouseleave", () => {
+      isMousePanning = false;
       hoverLineX = null;
       hoverLineY = null;
       if (currentKey && spectraData[currentKey]) {
@@ -1018,33 +1215,122 @@
       }
     });
 
-    // TOUCH: press-and-hold hover on spectrum
+    // --- Touch: hover, pan, pinch zoom ---
     canvas.addEventListener("touchstart", (e) => {
-      if (e.touches && e.touches.length) {
-        e.preventDefault(); // prevent scrolling
+      if (e.touches.length === 1) {
+        // single-finger: start hover / maybe pan
+        e.preventDefault();
         const t = e.touches[0];
+
+        pinchActive = false;
+        pinchPrevDist = 0;
+        pinchAnchorNm = null;
+
+        touchPanActive = false;
+        touchPanStartX = t.clientX;
+        touchLastX = t.clientX;
+
         updateSpectrumHoverFromClientXY(t.clientX, t.clientY);
+      } else if (e.touches.length === 2) {
+        // two-finger: start pinch zoom
+        e.preventDefault();
+
+        pinchActive = true;
+        touchPanActive = false;
+
+        const cx = 0.5 * (e.touches[0].clientX + e.touches[1].clientX);
+        pinchAnchorNm = clientXToWavelength(cx);
+
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        pinchPrevDist = Math.hypot(dx, dy);
+
+        hoverLineX = null;
+        hoverLineY = null;
+        if (currentKey && spectraData[currentKey]) {
+          drawSpectrum(spectraData[currentKey]);
+        }
       }
     }, { passive: false });
 
     canvas.addEventListener("touchmove", (e) => {
-      if (e.touches && e.touches.length) {
-        e.preventDefault(); // keep finger drag inside canvas, no page scroll
+      if (pinchActive && e.touches.length === 2) {
+        // update pinch zoom
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+
+        if (pinchPrevDist > 0 && dist > 0 && pinchAnchorNm != null) {
+          const scale = dist / pinchPrevDist;   // >1 fingers apart
+          pinchPrevDist = dist;
+          const factor = 1 / scale;             // <1 zoom in, >1 zoom out
+          zoomXAround(pinchAnchorNm, factor);   // redraws spectrum + rainbow
+        }
+      } else if (e.touches.length === 1) {
+        // either pan or hover
+        e.preventDefault();
         const t = e.touches[0];
-        updateSpectrumHoverFromClientXY(t.clientX, t.clientY);
+        const dxFromStart = t.clientX - touchPanStartX;
+
+        if (!touchPanActive && Math.abs(dxFromStart) > TOUCH_PAN_THRESHOLD) {
+          // we’ve moved enough to treat this as a pan gesture
+          touchPanActive = true;
+          hoverLineX = null;
+          hoverLineY = null;
+        }
+
+        if (touchPanActive) {
+          // horizontal pan
+          const cw = canvas.clientWidth || (canvas.width / (devicePixelRatio || 1));
+          const dx = t.clientX - touchLastX;
+          touchLastX = t.clientX;
+
+          panXByPixels(dx, cw);
+
+          if (currentKey && spectraData[currentKey]) {
+            const spectrum = spectraData[currentKey];
+            drawSpectrum(spectrum);
+            drawSpectrumRainbow(spectrum, document.getElementById("canvasRainbow"));
+          }
+        } else {
+          // still just hovering
+          touchLastX = t.clientX;
+          updateSpectrumHoverFromClientXY(t.clientX, t.clientY);
+        }
       }
     }, { passive: false });
 
-    canvas.addEventListener("touchend", () => {
-      // lift finger: remove the hover tracer
-      hoverLineX = null;
-      hoverLineY = null;
-      if (currentKey && spectraData[currentKey]) {
-        drawSpectrum(spectraData[currentKey]);
+    canvas.addEventListener("touchend", (e) => {
+      if (e.touches.length < 2) {
+        pinchActive = false;
+        pinchPrevDist = 0;
+        pinchAnchorNm = null;
+      }
+
+      if (e.touches.length === 0) {
+        // all fingers up: reset pan + hover
+        touchPanActive = false;
+        hoverLineX = null;
+        hoverLineY = null;
+        if (currentKey && spectraData[currentKey]) {
+          drawSpectrum(spectraData[currentKey]);
+        }
+      } else if (e.touches.length === 1) {
+        // go back to hover / possible pan with remaining finger
+        const t = e.touches[0];
+        touchPanActive = false;
+        touchPanStartX = t.clientX;
+        touchLastX = t.clientX;
+        updateSpectrumHoverFromClientXY(t.clientX, t.clientY);
       }
     }, { passive: true });
 
     canvas.addEventListener("touchcancel", () => {
+      pinchActive = false;
+      pinchPrevDist = 0;
+      pinchAnchorNm = null;
+      touchPanActive = false;
       hoverLineX = null;
       hoverLineY = null;
       if (currentKey && spectraData[currentKey]) {
@@ -1052,24 +1338,133 @@
       }
     }, { passive: true });
 
+
     canvas.addEventListener("click", () => {
-      if (hoverLineX !== null) {
-        persistentLineX = hoverLineX;
-        savedLines.push(persistentLineX);
+      // If you have the mouseDidPan guard from earlier, keep it:
+      if (typeof mouseDidPan !== "undefined" && mouseDidPan) {
+        mouseDidPan = false;
+        return;
       }
+
+      if (hoverLineX === null) return;
+
+      // Convert that X position to a wavelength using the current view window
+      const cw = canvas.clientWidth || (canvas.width / (devicePixelRatio || 1));
+      const frac = hoverLineX / Math.max(1, cw);
+      const wlNm = viewMinNm + frac * (viewMaxNm - viewMinNm);
+
+      persistentLineNm = wlNm;
+      savedLines.push(wlNm);
     });
 
-    document.getElementById("keepLineBtn").addEventListener("click", () => {
-      if (persistentLineX !== null) {
-        savedLines.push(persistentLineX);
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const factor = wheelZoomFactor(e.deltaY); // <1 zoom in, >1 zoom out
+      zoomXCentered(factor);
+    }, { passive: false });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() === 'r') {
+        viewMinNm = VIS_MIN_NM;
+        viewMaxNm = VIS_MAX_NM;
+        if (currentKey && spectraData[currentKey]) {
+          const spectrum = spectraData[currentKey];
+          drawSpectrum(spectrum);
+          drawSpectrumRainbow(spectrum, document.getElementById('canvasRainbow'));
+        }
       }
     });
 
     document.getElementById("clearLinesBtn").addEventListener("click", () => {
       savedLines = [];
-      persistentLineX = null;
-      drawSpectrum(spectraData[currentKey]);
+      persistentLineNm = null;
+      if (currentKey && spectraData[currentKey]) {
+        drawSpectrum(spectraData[currentKey]);
+      }
     });
+
+    function clientXToWavelength(clientX) {
+      const rect = canvas.getBoundingClientRect();
+      const cw = canvas.clientWidth || (canvas.width / (devicePixelRatio || 1));
+      const x = clientX - rect.left;
+      const clampedX = Math.max(0, Math.min(cw, x));
+      const frac = clampedX / Math.max(1, cw);
+      return viewMinNm + frac * (viewMaxNm - viewMinNm);
+    }
+
+    canvas.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 1) {
+        // single-finger: hover tracer
+        e.preventDefault();
+        const t = e.touches[0];
+        updateSpectrumHoverFromClientXY(t.clientX, t.clientY);
+        pinchActive = false;
+        pinchPrevDist = 0;
+        pinchAnchorNm = null;
+      } else if (e.touches.length === 2) {
+        // two-finger: start pinch zoom
+        e.preventDefault();
+        pinchActive = true;
+        const cx = 0.5 * (e.touches[0].clientX + e.touches[1].clientX);
+        pinchAnchorNm = clientXToWavelength(cx);
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        pinchPrevDist = Math.hypot(dx, dy);
+
+        hoverLineX = null;
+        hoverLineY = null;
+        if (currentKey && spectraData[currentKey]) {
+          drawSpectrum(spectraData[currentKey]);
+        }
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchmove", (e) => {
+      if (pinchActive && e.touches.length === 2) {
+        // update pinch zoom
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        if (pinchPrevDist > 0 && dist > 0 && pinchAnchorNm != null) {
+          const scale = dist / pinchPrevDist; // >1 fingers apart
+          pinchPrevDist = dist;
+          const factor = 1 / scale;           // match wheel: <1 in, >1 out
+          zoomXAround(pinchAnchorNm, factor);
+        }
+      } else if (e.touches.length === 1) {
+        // single-finger hover
+        e.preventDefault();
+        const t = e.touches[0];
+        updateSpectrumHoverFromClientXY(t.clientX, t.clientY);
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchend", (e) => {
+      if (e.touches.length < 2) {
+        pinchActive = false;
+        pinchPrevDist = 0;
+        pinchAnchorNm = null;
+      }
+      if (e.touches.length === 0) {
+        hoverLineX = null;
+        hoverLineY = null;
+        if (currentKey && spectraData[currentKey]) {
+          drawSpectrum(spectraData[currentKey]);
+        }
+      }
+    }, { passive: true });
+
+    canvas.addEventListener("touchcancel", () => {
+      pinchActive = false;
+      pinchPrevDist = 0;
+      pinchAnchorNm = null;
+      hoverLineX = null;
+      hoverLineY = null;
+      if (currentKey && spectraData[currentKey]) {
+        drawSpectrum(spectraData[currentKey]);
+      }
+    }, { passive: true });
 
   </script>
 </body>
