@@ -20,6 +20,23 @@
     <div id="message" role="status">Initializing…</div>
     <button id="keepLineBtn">Keep Line</button>
     <button id="clearLinesBtn">Clear Lines</button>
+
+    <!-- Hidden Easter Egg: appears when user presses "E" -->
+    <div id="elementGuidesContainer" style="display:none; margin-left:12px; align-items:center; gap:4px;">
+      <label for="elementGuidesSelect" style="font-size:0.9rem; user-select:none;">
+        Element guidelines:
+      </label>
+      <select id="elementGuidesSelect" style="font-size:0.9rem;">
+        <option value="">None</option>
+        <option value="hydrogen">Hydrogen (Balmer)</option>
+        <option value="helium">Helium</option>
+        <option value="sodium">Sodium</option>
+        <option value="magnesium">Magnesium</option>
+        <option value="oxygen">Oxygen</option>
+        <option value="iron">Iron</option>
+        <option value="calcium">Calcium (Ca II)</option>
+      </select>
+    </div>
   </div>
 
   <div id="canvas-container">
@@ -44,6 +61,10 @@
 
     const titleMain = document.getElementById('titleMain');
 
+    // Easter egg elements
+    const elementGuidesContainer = document.getElementById('elementGuidesContainer');
+    const elementGuidesSelect = document.getElementById('elementGuidesSelect');
+
     let currentMode = 'main'; // 'main' or 'giants'
     const SPECTRA_FILES = {
       main: 'spectra.json',
@@ -66,6 +87,94 @@
     const marginBottom = 60;    // px for scale and labels
     const topPadding = 40;
     let plotHeight;
+
+    // Element guideline sets: common useful visible lines for each element
+    // Element guideline sets: common useful visible lines for each element,
+    // now extended down into the ~400 nm range where appropriate.
+    const ELEMENT_LINE_SETS = {
+      hydrogen: {
+        displayName: 'Hydrogen (Balmer)',
+        lines: [
+          { wavelength: 656.3, label: 'Hα' },
+          { wavelength: 486.1, label: 'Hβ' },
+          { wavelength: 434.0, label: 'Hγ' },
+          { wavelength: 410.2, label: 'Hδ' },
+          { wavelength: 397.0, label: 'Hε' }           // new, in the 400 nm range
+        ]
+      },
+      helium: {
+        displayName: 'Helium',
+        lines: [
+          { wavelength: 447.1, label: 'He I' },
+          { wavelength: 468.6, label: 'He II' },
+          { wavelength: 587.6, label: 'He I' },
+          { wavelength: 402.6, label: 'He I' }         // new, in the 400 nm range
+        ]
+      },
+      sodium: {
+        displayName: 'Sodium D',
+        lines: [
+          { wavelength: 589.0, label: 'Na D2' },
+          { wavelength: 589.6, label: 'Na D1' }
+          // Na has no strong textbook visible doublet in the low-400 nm range,
+          // so we keep this set focused on the D lines.
+        ]
+      },
+      magnesium: {
+        displayName: 'Magnesium b / II',
+        lines: [
+          { wavelength: 516.7, label: 'Mg b1' },
+          { wavelength: 517.3, label: 'Mg b2' },
+          { wavelength: 518.4, label: 'Mg b3' },
+          { wavelength: 448.1, label: 'Mg II' }        // new, in the 400 nm range
+        ]
+      },
+      oxygen: {
+        displayName: 'Oxygen',
+        lines: [
+          { wavelength: 495.9, label: '[O III]' },
+          { wavelength: 500.7, label: '[O III]' },
+          { wavelength: 436.3, label: '[O III]' }      // new, in the 400 nm range
+        ]
+      },
+      iron: {
+        displayName: 'Iron',
+        lines: [
+          { wavelength: 438.3, label: 'Fe I' },
+          { wavelength: 527.0, label: 'Fe I' },
+          { wavelength: 532.8, label: 'Fe I' },
+          { wavelength: 404.6, label: 'Fe I' }         // new, in the 400 nm range
+        ]
+      },
+      calcium: {
+        displayName: 'Calcium (Ca II)',
+        lines: [
+          { wavelength: 396.9, label: 'Ca II' },
+          { wavelength: 393.3, label: 'Ca II' }
+        ]
+      }
+    };
+
+
+    let selectedElementKey = '';
+
+    // Reveal the hidden dropdown when user presses "E"
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'e' || ev.key === 'E') {
+        if (elementGuidesContainer && elementGuidesContainer.style.display === 'none') {
+          elementGuidesContainer.style.display = 'inline-flex';
+        }
+      }
+    });
+
+    if (elementGuidesSelect) {
+      elementGuidesSelect.addEventListener('change', () => {
+        selectedElementKey = elementGuidesSelect.value;
+        if (currentKey && spectraData[currentKey]) {
+          drawSpectrum(spectraData[currentKey]);
+        }
+      });
+    }
 
     function setupTitleToggle() {
       if (!titleMain) return;
@@ -239,6 +348,9 @@
         ctx.stroke();
       }
 
+      // element guidelines (if enabled via dropdown)
+      drawElementGuides(minW, maxW, cw, rainbowTop, rainbowBottom);
+
       // --- hover measuring line and label (match Galaxy Viewer style) ---
       if (hoverLineX !== null && hoverLineX >= 0 && hoverLineX <= cw) {
         // Map x → wavelength (nm) across visible band
@@ -285,10 +397,101 @@
 
         ctx.restore();
       }
-
-      // wavelength label for hover line, with glow in spectral color
     }
 
+    function drawElementGuides(minW, maxW, cw, rainbowTop, rainbowBottom) {
+      if (!selectedElementKey) return;
+      const set = ELEMENT_LINE_SETS[selectedElementKey];
+      if (!set || !set.lines || set.lines.length === 0) return;
+
+      const range = maxW - minW;
+      if (range <= 0) return;
+
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1.4;
+      ctx.font = 'bold 12px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+
+      // Track placed label boxes to avoid overlaps
+      const placedBoxes = [];
+      const baseLabelY = rainbowTop + 4;
+      const maxLabelAreaHeight = (rainbowBottom - rainbowTop) * 0.4; // top 40% of band
+      const maxY = rainbowTop + maxLabelAreaHeight;
+
+      function findNonOverlappingY(x, boxWidth, boxHeight) {
+        const paddingY = 2;
+        let y = baseLabelY;
+
+        while (true) {
+          const x1 = x - boxWidth / 2;
+          const x2 = x + boxWidth / 2;
+          const y1 = y - paddingY;
+          const y2 = y - paddingY + boxHeight;
+
+          let overlaps = false;
+          for (const b of placedBoxes) {
+            // Overlap if ranges intersect in both x and y
+            const xOverlap = !(x2 < b.x1 || x1 > b.x2);
+            const yOverlap = !(y2 < b.y1 || y1 > b.y2);
+            if (xOverlap && yOverlap) {
+              overlaps = true;
+              break;
+            }
+          }
+
+          // If no overlap or we’ve gone “too low”, accept this Y
+          if (!overlaps || y > maxY) {
+            placedBoxes.push({ x1, x2, y1, y2 });
+            return y;
+          }
+
+          // Try the next row down
+          y += boxHeight + 2;
+        }
+      }
+
+      for (const line of set.lines) {
+        const wl = line.wavelength;
+        if (wl < minW || wl > maxW) continue;
+
+        const x = ((wl - minW) / range) * cw;
+
+        // dashed vertical guideline
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.beginPath();
+        ctx.moveTo(x, rainbowTop);
+        ctx.lineTo(x, rainbowBottom);
+        ctx.stroke();
+
+        // label with wavelength
+        const label = `${line.label} ${wl.toFixed(1)} nm`;
+        const paddingX = 4;
+        const paddingY = 2;
+        const metrics = ctx.measureText(label);
+        const boxWidth = metrics.width + paddingX * 2;
+        const boxHeight = 14 + paddingY * 2;
+
+        // Find a vertical position that does not overlap existing labels
+        const labelY = findNonOverlappingY(x, boxWidth, boxHeight);
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        ctx.fillRect(
+          x - boxWidth / 2,
+          labelY - paddingY,
+          boxWidth,
+          boxHeight
+        );
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(label, x, labelY);
+        ctx.restore();
+      }
+
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
 
 
     function drawWavelengthScale(minW, maxW, ctx, cw, ch, marginBottom) {
